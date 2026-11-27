@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="az">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quest Home VR</title>
+<style>
+:root{--bg:#0b0d14;--fg:#fff;--mut:#aab}
+@media (prefers-color-scheme: dark){:root{--bg:#0b0d14;--fg:#fff;--mut:#aab}}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:var(--bg);text-align:center;padding:20px;box-sizing:border-box}
+#start h1{margin:0;font-size:26px}
+#start p{margin:0;max-width:440px;color:var(--mut);font-size:14px;line-height:1.45}
+button{font:inherit;font-size:16px;padding:12px 22px;border-radius:999px;border:0;background:#3b82f6;color:#fff}
+button.alt{background:#2a2f40}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="v" playsinline muted style="display:none"></video>
+<div id="start">
+  <h1>Quest Home</h1>
+  <p>Telefonu Cardboard tipli gözlüyə qoyun. Baş hərəkəti giroskopla, əl isə kamera ilə izlənir: əlinizi kameranın qarşısında tutun, barmaq ucunuz kursor olur. Tətbiqin üstündə kursoru 1,5 saniyə saxlasanız açılır.</p>
+  <button id="b1">VR rejimi (iki göz)</button>
+  <button id="b2" class="alt">Adi rejim (test)</button>
+  <p>Kamera üçün səhifə https ilə açılmalıdır. Əl izləməsi üçün arxa kamera istifadə olunur.</p>
+</div>
+<script>
+const cv=document.getElementById('c'),g=cv.getContext('2d'),vid=document.getElementById('v');
+let W,H,stereo=true,run=false;
+function rs(){const d=devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*d;cv.height=H*d;g.setTransform(d,0,0,d,0,0)}
+addEventListener('resize',rs);rs();
+
+const apps=[
+['YouTube','▶','#e62117','https://m.youtube.com'],
+['Roblox','◼','#2d7bf4','https://www.roblox.com'],
+['Brauzer','◎','#16a085','https://www.google.com'],
+['Xəritə','⌖','#e67e22','https://maps.google.com'],
+['Musiqi','♫','#1db954','https://open.spotify.com'],
+['360° video','◐','#8e44ad','https://m.youtube.com/results?search_query=360+vr'],
+['Kamera','◉','#34495e','cam'],
+['Mərkəz','✛','#7f8c8d','center']];
+const SP=0.17;
+const wrap=a=>Math.atan2(Math.sin(a),Math.cos(a));
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// Baş izləmə
+let yaw=0,pitch=0,tYaw=0,tPitch=0,yaw0=null,lastH=0,hasOri=false;
+function onOri(e){
+  if(e.alpha==null)return;
+  const r=Math.PI/180,a=e.alpha*r,b=e.beta*r,c=e.gamma*r;
+  const rA=-Math.cos(a)*Math.sin(c)-Math.sin(a)*Math.sin(b)*Math.cos(c);
+  const rB=-Math.sin(a)*Math.sin(c)+Math.cos(a)*Math.sin(b)*Math.cos(c);
+  const z=-Math.cos(b)*Math.cos(c);
+  lastH=Math.atan2(rA,rB);
+  if(yaw0===null)yaw0=lastH;
+  tYaw=wrap(lastH-yaw0);tPitch=Math.asin(clamp(z,-1,1));hasOri=true;
+}
+
+// Əl izləmə (dəri rəngi ilə barmaq ucu)
+const sc=document.createElement('canvas');sc.width=80;sc.height=60;
+const sg=sc.getContext('2d',{willReadFrequently:true});
+let camOK=false,passthru=true,handOn=false,hx=.5,hy=.4,lastDet=0;
+async function startCam(){
+  try{
+    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:640},height:{ideal:480}},audio:false});
+    vid.srcObject=s;await vid.play();camOK=true;
+  }catch(e){camOK=false}
+}
+function detect(){
+  sg.drawImage(vid,0,0,80,60);
+  const d=sg.getImageData(0,0,80,60).data;
+  const rows=new Array(60).fill(0),sx=new Array(60).fill(0);let n=0;
+  for(let y=0;y<60;y++)for(let x=0;x<80;x++){
+    const i=(y*80+x)*4,R=d[i],G=d[i+1],B=d[i+2];
+    const Y=.299*R+.587*G+.114*B,cb=128-.1687*R-.3313*G+.5*B,cr=128+.5*R-.4187*G-.0813*B;
+    if(Y>50&&cb>77&&cb<127&&cr>135&&cr<173){rows[y]++;sx[y]+=x;n++}
+  }
+  if(n<150||n>3200){handOn=false;return}
+  let y0=-1;for(let y=0;y<60;y++)if(rows[y]>=3){y0=y;break}
+  if(y0<0){handOn=false;return}
+  let a=0,c=0;for(let y=y0;y<Math.min(60,y0+4);y++){a+=sx[y];c+=rows[y]}
+  const tx=clamp((a/c/80-.5)*1.3+.5,0,1),ty=clamp(y0/60*1.25,0,1);
+  handOn=true;hx+=(tx-hx)*.4;hy+=(ty-hy)*.4;
+}
+
+// Mausla test
+addEventListener('pointermove',e=>{if(!handOn&&run){hx=e.clientX/W*(stereo?2:1)%1;hy=e.clientY/H}});
+addEventListener('keydown',e=>{
+  if(e.key==='ArrowLeft')tYaw-=.05;if(e.key==='ArrowRight')tYaw+=.05;
+  if(e.key==='ArrowUp')tPitch+=.05;if(e.key==='ArrowDown')tPitch-=.05;
+});
+
+// Seçim
+let hover=-1,dwell=0,toast='',toastT=0;
+function trigger(a){
+  if(a[3]==='cam'){passthru=!passthru;return}
+  if(a[3]==='center'){yaw0=lastH;tYaw=0;tPitch=0;return}
+  toast=a[0]+' açılır…';toastT=2;
+  setTimeout(()=>{location.href=a[3]},400);
+}
+
+function tile(x,y,s,a,hov,p){
+  g.save();g.translate(x,y);const k=hov?1.08:1;g.scale(k,k);
+  g.fillStyle='rgba(30,34,48,.85)';g.beginPath();g.roundRect(-s/2,-s/2,s,s,s*.18);g.fill();
+  g.fillStyle=a[2];g.beginPath();g.arc(0,-s*.1,s*.28,0,7);g.fill();
+  g.fillStyle='#fff';g.textAlign='center';g.textBaseline='middle';
+  g.font=(s*.3)+'px system-ui';g.fillText(a[1],0,-s*.1);
+  g.font=(s*.13)+'px system-ui';g.fillText(a[0],0,s*.33);
+  if(p>0){g.strokeStyle='#fff';g.lineWidth=s*.04;g.beginPath();g.arc(0,0,s*.5,-Math.PI/2,-Math.PI/2+p*6.283);g.stroke()}
+  g.restore();
+}
+function pos(i,w,f){
+  const c=i%4,r=Math.floor(i/4);
+  const th=(c-1.5)*SP,ph=(.5-r)*SP-.02;
+  return [w/2+wrap(th-yaw)*f,H/2-(ph-pitch)*f];
+}
+function eye(x0,w,sgn){
+  const f=H*1.5,s=SP*.88*f;
+  g.save();g.beginPath();g.rect(x0,0,w,H);g.clip();g.translate(x0,0);
+  if(passthru&&camOK&&vid.videoWidth){
+    const k=Math.max(w/vid.videoWidth,H/vid.videoHeight);
+    g.drawImage(vid,(w-vid.videoWidth*k)/2,(H-vid.videoHeight*k)/2,vid.videoWidth*k,vid.videoHeight*k);
+    g.fillStyle='rgba(8,10,18,.55)';g.fillRect(0,0,w,H);
+  }else{
+    const gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,'#1b2140');gr.addColorStop(1,'#0b0d14');
+    g.fillStyle=gr;g.fillRect(0,0,w,H);
+  }
+  g.save();g.translate(sgn*3,0);
+  apps.forEach((a,i)=>{const [x,y]=pos(i,w,f);tile(x,y,s,a,i===hover,i===hover?dwell/1.5:0)});
+  // status pill
+  const t=new Date(),hh=String(t.getHours()).padStart(2,'0'),mm=String(t.getMinutes()).padStart(2,'0');
+  const px=w/2+wrap(0-yaw)*f,py=H/2-(.33-pitch)*f;
+  g.fillStyle='rgba(30,34,48,.85)';g.beginPath();g.roundRect(px-s*1.5,py-s*.17,s*3,s*.34,s*.17);g.fill();
+  g.fillStyle='#fff';g.font=(s*.14)+'px system-ui';g.textAlign='center';g.textBaseline='middle';
+  g.fillText(hh+':'+mm+'  ·  Əl: '+(handOn?'tapıldı':(camOK?'yoxdur':'kamera yox'))+'  ·  Baş: '+(hasOri?'aktiv':'oxlar'),px,py);
+  if(!handOn&&camOK){g.fillStyle='rgba(255,255,255,.7)';g.fillText('Əlinizi kameranın qarşısına gətirin',w/2,H*.93)}
+  if(toastT>0){g.fillStyle='#fff';g.font=(s*.2)+'px system-ui';g.fillText(toast,w/2,H*.5)}
+  g.restore();
+  // kursor (daha yaxın görünür)
+  const cx=hx*w-sgn*6,cy=hy*H;
+  g.fillStyle='rgba(255,255,255,.25)';g.beginPath();g.arc(cx,cy,s*.13,0,7);g.fill();
+  g.fillStyle='#fff';g.beginPath();g.arc(cx,cy,s*.045,0,7);g.fill();
+  g.restore();
+}
+
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(.1,(now-last)/1000);last=now;
+  if(camOK&&vid.readyState>=2&&now-lastDet>66){detect();lastDet=now}
+  yaw+=wrap(tYaw-yaw)*.5;pitch+=(tPitch-pitch)*.5;
+  const w=stereo?W/2:W,f=H*1.5,s=SP*.88*f;
+  let h=-1;
+  apps.forEach((a,i)=>{const [x,y]=pos(i,w,f);
+    if(Math.abs(hx*w-x)<s/2&&Math.abs(hy*H-y)<s/2)h=i});
+  if(h!==hover){hover=h;dwell=0}
+  else if(h>=0){dwell+=dt;if(dwell>=1.5){dwell=0;trigger(apps[h])}}
+  if(toastT>0)toastT-=dt;
+  g.clearRect(0,0,W,H);
+  if(stereo){eye(0,W/2,-1);eye(W/2,W/2,1);g.fillStyle='#000';g.fillRect(W/2-1,0,2,H)}
+  else eye(0,W,0);
+  requestAnimationFrame(frame);
+}
+
+async function begin(st){
+  stereo=st;
+  document.getElementById('start').style.display='none';
+  try{document.documentElement.requestFullscreen&&await document.documentElement.requestFullscreen()}catch(e){}
+  try{screen.orientation&&screen.orientation.lock&&await screen.orientation.lock('landscape')}catch(e){}
+  try{navigator.wakeLock&&navigator.wakeLock.request('screen').catch(()=>{})}catch(e){}
+  try{
+    if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission)
+      await DeviceOrientationEvent.requestPermission();
+  }catch(e){}
+  addEventListener('deviceorientation',onOri);
+  await startCam();
+  run=true;requestAnimationFrame(frame);
+}
+document.getElementById('b1').onclick=()=>begin(true);
+document.getElementById('b2').onclick=()=>begin(false);
+</script>
+</body>
+</html>
